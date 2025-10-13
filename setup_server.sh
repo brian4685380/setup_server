@@ -89,14 +89,14 @@ ZRC
 
 # ====== 4) Install Neovim to ~/apps and symlink to ~/bin ======
 install_neovim() {
-  say "Installing Neovim v0.10.3 (linux64)"
+  say "Installing Neovim v0.11.4 (linux64)"
   mkdir -p "$HOME/apps" && cd "$HOME/apps"
   local NVPKG="nvim-linux64.tar.gz"
   rm -f "$NVPKG"
   if have curl; then
-    curl -fL -o "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.10.3/nvim-linux64.tar.gz"
+    curl -fL -o "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux64.tar.gz"
   else
-    wget -O "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.10.3/nvim-linux64.tar.gz"
+    wget -O "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux64.tar.gz"
   fi
   rm -rf "$HOME/apps/nvim-linux64"
   tar xzf "$NVPKG"
