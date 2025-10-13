@@ -94,9 +94,9 @@ install_neovim() {
   local NVPKG="nvim-linux64.tar.gz"
   rm -f "$NVPKG"
   if have curl; then
-    curl -fL -o "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux64.tar.gz"
+    curl -fL -o "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz"
   else
-    wget -O "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux64.tar.gz"
+    wget -O "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz"
   fi
   rm -rf "$HOME/apps/nvim-linux64"
   tar xzf "$NVPKG"
