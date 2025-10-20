@@ -100,7 +100,7 @@ install_neovim() {
   fi
   rm -rf "$HOME/apps/nvim-linux64"
   tar xzf "$NVPKG"
-  ln -sf "$HOME/apps/nvim-linux64/bin/nvim" "$HOME/bin/nvim"
+  ln -sf "$HOME/apps/nvim-linux-x86_64/bin/nvim" "$HOME/bin/nvim"
 }
 
 # ====== 5) Install zoxide (musl static) ======
