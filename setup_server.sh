@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bi#!/usr/bin/env bash
 set -Eeuo pipefail
 
 # ====== helpers ======
@@ -11,24 +11,6 @@ die() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
-cleanup() {
-  :
-}
-trap cleanup EXIT
-trap 'die "failed at line $LINENO"' ERR
-
-download() {
-  local url="$1"
-  local out="$2"
-  if have curl; then
-    curl -fL --retry 3 --retry-delay 1 -o "$out" "$url"
-  elif have wget; then
-    wget -O "$out" "$url"
-  else
-    die "Neither curl nor wget is available"
-  fi
-}
 
 ensure_line() {
   local line="$1"
@@ -47,7 +29,7 @@ ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc"
 ensure_bash_login_sources_bashrc() {
   say "Ensuring login bash shells source ~/.bashrc"
 
-  if ! grep -qF 'source "$HOME/.bashrc"' "$HOME/.bash_profile" 2>/dev/null; then
+  if ! grep -qF '. "$HOME/.bashrc"' "$HOME/.bash_profile" 2>/dev/null; then
     cat >>"$HOME/.bash_profile" <<'EOF'
 # Load ~/.bashrc for login shells
 if [ -f "$HOME/.bashrc" ]; then
@@ -56,7 +38,7 @@ fi
 EOF
   fi
 
-  if ! grep -qF 'source "$HOME/.bashrc"' "$HOME/.profile" 2>/dev/null; then
+  if ! grep -qF '. "$HOME/.bashrc"' "$HOME/.profile" 2>/dev/null; then
     cat >>"$HOME/.profile" <<'EOF'
 # Load ~/.bashrc for login shells
 if [ -f "$HOME/.bashrc" ]; then
@@ -92,21 +74,20 @@ EOF
 install_zsh() {
   say "Installing zsh (from source) into \$HOME (optional)"
 
-  # Skip build if zsh already exists
+  # Skip if a zsh is already present in PATH
   if have zsh; then
     say "zsh already available at $(command -v zsh). Skipping build."
     return 0
   fi
 
+  # Need wget/curl, tar, make, a compiler toolchain; we assume they exist
   cd "$HOME"
   rm -rf zsh-src zsh.tar zsh.tar.xz || true
-
   if have wget; then
     wget -O zsh.tar.xz "https://sourceforge.net/projects/zsh/files/latest/download"
   else
     curl -L -o zsh.tar.xz "https://sourceforge.net/projects/zsh/files/latest/download"
   fi
-
   mkdir -p zsh-src
   unxz zsh.tar.xz
   tar -xvf zsh.tar -C zsh-src --strip-components 1
@@ -123,12 +104,14 @@ install_z4h() {
   say "Installing zsh4humans v5"
   warn "zsh4humans installer is interactive and may rewrite ~/.zshrc"
 
+  # Run installer via curl or wget
   if have curl; then
     sh -c "$(curl -fsSL https://raw.githubusercontent.com/romkatv/zsh4humans/v5/install)"
   else
     sh -c "$(wget -O- https://raw.githubusercontent.com/romkatv/zsh4humans/v5/install)"
   fi
 
+  # Ensure PATH still exists afterwards
   ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc"
 }
 
@@ -156,16 +139,13 @@ EOF
 install_neovim() {
   say "Installing Neovim v0.11.4 (linux64)"
   mkdir -p "$HOME/apps" && cd "$HOME/apps"
-
   local NVPKG="nvim-linux-x86_64.tar.gz"
   rm -f "$NVPKG"
-
   if have curl; then
     curl -fL -o "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz"
   else
     wget -O "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz"
   fi
-
   rm -rf "$HOME/apps/nvim-linux-x86_64"
   tar xzf "$NVPKG"
   ln -sf "$HOME/apps/nvim-linux-x86_64/bin/nvim" "$HOME/bin/nvim"
@@ -175,16 +155,13 @@ install_neovim() {
 install_zoxide() {
   say "Installing zoxide v0.9.8 (musl)"
   mkdir -p "$HOME/apps/zoxide" && cd "$HOME/apps/zoxide"
-
   local ZO="zoxide-0.9.8-x86_64-unknown-linux-musl.tar.gz"
   rm -f "$ZO"
-
   if have curl; then
     curl -fL -o "$ZO" "https://github.com/ajeetdsouza/zoxide/releases/download/v0.9.8/${ZO}"
   else
     wget -O "$ZO" "https://github.com/ajeetdsouza/zoxide/releases/download/v0.9.8/${ZO}"
   fi
-
   rm -rf "$HOME/apps/zoxide/extract" || true
   mkdir -p "$HOME/apps/zoxide/extract"
   tar -xzf "$ZO" -C "$HOME/apps/zoxide/extract"
@@ -206,11 +183,9 @@ install_zoxide() {
 install_exa_or_eza() {
   say "Installing exa v0.10.1 (or eza fallback)"
   mkdir -p "$HOME/apps/exa" && cd "$HOME/apps/exa"
-
   local EXAZIP="exa-linux-x86_64-v0.10.1.zip"
   local EXAURL="https://github.com/ogham/exa/releases/download/v0.10.1/${EXAZIP}"
   local got_exa=0
-
   rm -f "$EXAZIP"
   if have curl; then
     curl -fL -o "$EXAZIP" "$EXAURL" || true
@@ -221,7 +196,6 @@ install_exa_or_eza() {
   if [ -f "$EXAZIP" ]; then
     rm -rf "$HOME/apps/exa/exa" "$HOME/apps/exa/bin" || true
     unzip -o "$EXAZIP" || true
-
     if [ -f "$HOME/apps/exa/bin/exa" ]; then
       ln -sf "$HOME/apps/exa/bin/exa" "$HOME/bin/exa"
       got_exa=1
@@ -234,24 +208,20 @@ install_exa_or_eza() {
   if [ "$got_exa" -eq 0 ]; then
     say "exa download failed or structure changed; falling back to eza"
     mkdir -p "$HOME/apps/eza" && cd "$HOME/apps/eza"
-
     local EZAURL="https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz"
-
     if have curl; then
       curl -fL -o eza.tar.gz "$EZAURL" || true
     else
       wget -O eza.tar.gz "$EZAURL" || true
     fi
-
     if [ -f eza.tar.gz ]; then
       rm -rf "$HOME/apps/eza/extract" || true
       mkdir -p "$HOME/apps/eza/extract"
       tar -xzf eza.tar.gz -C "$HOME/apps/eza/extract" || true
-
       local EZABIN
       EZABIN="$(find "$HOME/apps/eza/extract" -maxdepth 3 -type f -name eza | head -n1 || true)"
       if [ -n "${EZABIN:-}" ]; then
-        ln -sf "$EZABIN" "$HOME/bin/exa" # keep alias compatibility
+        ln -sf "$EZABIN" "$HOME/bin/exa" # still map to exa name for your aliases
       else
         say "eza binary not found; skipping."
       fi
@@ -263,12 +233,10 @@ install_exa_or_eza() {
 configure_aliases() {
   say "Adding shell aliases to ~/.zshrc"
   touch "$HOME/.zshrc"
-
   add_alias() {
     local line="$1"
     grep -qxF "$line" "$HOME/.zshrc" 2>/dev/null || echo "$line" >>"$HOME/.zshrc"
   }
-
   add_alias "alias gs='git status'"
   add_alias "alias ga='git add'"
   add_alias "alias gc='git commit'"
@@ -280,11 +248,9 @@ configure_aliases() {
 # ====== 8) LazyVim bootstrap ======
 install_lazyvim() {
   say "Installing LazyVim starter"
-
   if [ -d "$HOME/.config/nvim" ]; then
     mv "$HOME/.config/nvim" "$HOME/.config/nvim.bak.$(date +%s)" || true
   fi
-
   git clone https://github.com/LazyVim/starter "$HOME/.config/nvim"
   rm -rf "$HOME/.config/nvim/.git"
 
@@ -308,4 +274,4 @@ main() {
   say "All done! Open a new SSH session or run: exec zsh -l"
 }
 
-main "$@"
+main "$@"n/env bash
