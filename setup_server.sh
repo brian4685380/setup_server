@@ -11,7 +11,7 @@ ZOXIDE_VERSION="0.9.8"
 INSTALL_ZSH=0
 INSTALL_Z4H=0
 FORCE_LAZYVIM=0
-AUTO_HANDOFF=0
+AUTO_HANDOFF=1
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -74,17 +74,17 @@ parse_args() {
     --install-zsh) INSTALL_ZSH=1 ;;
     --install-z4h) INSTALL_Z4H=1 ;;
     --force-lazyvim) FORCE_LAZYVIM=1 ;;
-    --auto-handoff) AUTO_HANDOFF=1 ;;
+    --no-auto-handoff) AUTO_HANDOFF=0 ;;
     -h | --help)
       cat <<'EOF'
 Usage: ./bootstrap.sh [options]
 
 Options:
-  --install-zsh      Build/install zsh into $HOME
-  --install-z4h      Run zsh4humans installer (interactive; runs last)
-  --force-lazyvim    Replace existing ~/.config/nvim
-  --auto-handoff     Add bash -> zsh auto-exec block to ~/.bashrc
-  -h, --help         Show this help
+  --install-zsh       Build/install zsh into $HOME
+  --install-z4h       Run zsh4humans installer (interactive; runs last)
+  --force-lazyvim     Replace existing ~/.config/nvim
+  --no-auto-handoff   Do not add bash -> zsh handoff block
+  -h, --help          Show this help
 EOF
       exit 0
       ;;
@@ -96,9 +96,6 @@ EOF
   done
 }
 
-# =========================
-# Base layout / shell files
-# =========================
 ensure_base_layout() {
   say "Preparing base layout"
 
@@ -124,9 +121,6 @@ EOF
   fi
 }
 
-# =========================
-# Optional zsh build
-# =========================
 install_zsh() {
   [[ "$INSTALL_ZSH" -eq 1 ]] || return 0
 
@@ -155,13 +149,15 @@ install_zsh() {
 configure_auto_handoff() {
   [[ "$AUTO_HANDOFF" -eq 1 ]] || return 0
 
-  say "Configuring optional bash -> zsh handoff"
+  say "Configuring bash -> zsh handoff"
 
   if ! grep -q 'BEGIN bootstrap-zsh-handoff' "$HOME/.bashrc" 2>/dev/null; then
     cat >>"$HOME/.bashrc" <<'EOF'
 
 # BEGIN bootstrap-zsh-handoff
-if [[ $- == *i* ]]; then
+# Emulate "default shell = zsh" without chsh/sudo.
+# Only applies to interactive bash shells.
+if [[ $- == *i* ]] && [[ -z "${ZSH_VERSION:-}" ]]; then
   if [[ -x "$HOME/bin/zsh" ]]; then
     exec "$HOME/bin/zsh" -l
   elif command -v zsh >/dev/null 2>&1; then
@@ -173,9 +169,6 @@ EOF
   fi
 }
 
-# =========================
-# zsh4humans (optional)
-# =========================
 install_z4h() {
   [[ "$INSTALL_Z4H" -eq 1 ]] || return 0
 
@@ -196,9 +189,6 @@ install_z4h() {
   fi
 }
 
-# =========================
-# Powerlevel10k config
-# =========================
 install_p10k_config() {
   say "Configuring Powerlevel10k"
 
@@ -216,9 +206,6 @@ install_p10k_config() {
   ensure_line '[[ -f "$HOME/.p10k.zsh" ]] && source "$HOME/.p10k.zsh"' "$zrc"
 }
 
-# =========================
-# Neovim
-# =========================
 install_neovim() {
   say "Installing Neovim $NEOVIM_VERSION"
 
@@ -246,9 +233,6 @@ install_neovim() {
   ln -sf "$HOME/apps/$extract_dir/bin/nvim" "$HOME/bin/nvim"
 }
 
-# =========================
-# zoxide
-# =========================
 install_zoxide() {
   say "Installing zoxide $ZOXIDE_VERSION"
 
@@ -277,9 +261,6 @@ install_zoxide() {
   ensure_line 'eval "$(zoxide init zsh)"' "$zrc"
 }
 
-# =========================
-# eza
-# =========================
 install_eza() {
   say "Installing eza"
 
@@ -306,9 +287,6 @@ install_eza() {
   ln -sf "$ezabin" "$HOME/bin/eza"
 }
 
-# =========================
-# Shell aliases / defaults
-# =========================
 configure_shell() {
   say "Writing shell config"
 
@@ -323,31 +301,25 @@ configure_shell() {
   ensure_line "alias vim='nvim'" "$zrc"
 }
 
-# =========================
-# LazyVim
-# =========================
 install_lazyvim() {
   say "Installing LazyVim starter"
 
   ensure_dir "$HOME/.config"
 
-  if [[ -d "$HOME/.config/nvim" && "$FORCE_LAZYVIM" -ne 1 ]]; then
-    warn "~/.config/nvim already exists; skipping LazyVim install"
-    warn "Use --force-lazyvim if you want to replace it"
-    return 0
-  fi
-
-  if [[ -d "$HOME/.config/nvim" && "$FORCE_LAZYVIM" -eq 1 ]]; then
-    mv "$HOME/.config/nvim" "$HOME/.config/nvim.bak.$(date +%s)"
+  if [[ -d "$HOME/.config/nvim" ]]; then
+    if [[ "$FORCE_LAZYVIM" -eq 1 ]]; then
+      mv "$HOME/.config/nvim" "$HOME/.config/nvim.bak.$(date +%s)"
+    else
+      warn "~/.config/nvim already exists; skipping LazyVim install"
+      warn "Use --force-lazyvim if you want to replace it"
+      return 0
+    fi
   fi
 
   git clone https://github.com/LazyVim/starter "$HOME/.config/nvim"
   rm -rf "$HOME/.config/nvim/.git"
 }
 
-# =========================
-# Monokai Pro plugin file
-# =========================
 install_monokai_pro_plugin() {
   say "Installing Monokai Pro plugin override"
 
@@ -379,10 +351,10 @@ main() {
   say "Done."
   echo
   echo "Next steps:"
-  echo "  1. Make sure these files exist next to the script if you want them copied:"
+  echo "  1. Put these files next to the script if you want them copied:"
   echo "     - .p10k.zsh"
   echo "     - monokai-pro.lua"
-  echo "  2. Start a new shell"
+  echo "  2. Open a new terminal"
   echo "  3. Or run: exec zsh -l"
 }
 
