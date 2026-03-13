@@ -31,8 +31,18 @@ download() {
   fi
 }
 
+detect_arch() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+  x86_64 | amd64) echo "x86_64" ;;
+  aarch64 | arm64) echo "aarch64" ;;
+  *) die "Unsupported architecture: $arch" ;;
+  esac
+}
+
 # Ensure ~/bin exists and is first on PATH (for this run and future shells)
-mkdir -p "$HOME/bin"
+mkdir -p "$HOME/bin" "$HOME/apps"
 export PATH="$HOME/bin:$PATH"
 ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc"
 ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc"
@@ -145,7 +155,43 @@ EOF
   fi
 }
 
-# ====== 4) Install Neovim to ~/apps and symlink to ~/bin ======
+# ====== 4) Install portable CMake to ~/apps and symlink to ~/bin ======
+install_cmake_local() {
+  if have cmake; then
+    say "cmake already available at $(command -v cmake)"
+    return 0
+  fi
+
+  say "Installing portable CMake into \$HOME"
+
+  local arch ver pkg base url
+  arch="$(detect_arch)"
+  ver="3.31.6"
+
+  case "$arch" in
+  x86_64) pkg="cmake-${ver}-linux-x86_64.tar.gz" ;;
+  aarch64) pkg="cmake-${ver}-linux-aarch64.tar.gz" ;;
+  esac
+
+  base="$HOME/apps"
+  cd "$base"
+  rm -f "$pkg"
+  rm -rf "$base/cmake-${ver}-linux-${arch}"
+
+  url="https://github.com/Kitware/CMake/releases/download/v${ver}/${pkg}"
+  download "$url" "$pkg"
+
+  tar -xzf "$pkg" -C "$base"
+
+  ln -sf "$base/cmake-${ver}-linux-${arch}/bin/cmake" "$HOME/bin/cmake"
+  ln -sf "$base/cmake-${ver}-linux-${arch}/bin/ctest" "$HOME/bin/ctest"
+
+  if ! have cmake; then
+    die "Portable cmake install failed"
+  fi
+}
+
+# ====== 5) Install Neovim to ~/apps and symlink to ~/bin ======
 # Try prebuilt binary first; if glibc is too old, fall back to source build.
 install_neovim() {
   say "Installing Neovim"
@@ -178,12 +224,17 @@ install_neovim() {
   rm -f "$HOME/bin/nvim"
   rm -rf "$HOME/apps/nvim-linux-x86_64"
 
+  install_cmake_local
+
+  have git || die "git is required to build Neovim from source"
+  have make || die "make is required to build Neovim from source"
+  have cc || have gcc || die "a C compiler is required to build Neovim from source"
+
   # 2) Build from source
   cd "$HOME/apps"
   git clone --depth 1 --branch "$NV_VER" https://github.com/neovim/neovim.git neovim-src
   cd neovim-src
 
-  # Build locally into $HOME/.local
   make CMAKE_BUILD_TYPE=RelWithDebInfo CMAKE_EXTRA_FLAGS="-DCMAKE_INSTALL_PREFIX=$HOME/.local"
   make install
 
@@ -196,7 +247,7 @@ install_neovim() {
   fi
 }
 
-# ====== 5) Install zoxide (musl static) ======
+# ====== 6) Install zoxide (musl static) ======
 install_zoxide() {
   say "Installing zoxide v0.9.8 (musl)"
   mkdir -p "$HOME/apps/zoxide" && cd "$HOME/apps/zoxide"
@@ -227,7 +278,7 @@ install_zoxide() {
   fi
 }
 
-# ====== 6) Install exa (deprecated) with graceful fallback to eza ======
+# ====== 7) Install exa (deprecated) with graceful fallback to eza ======
 install_exa_or_eza() {
   say "Installing exa v0.10.1 (or eza fallback)"
   mkdir -p "$HOME/apps/exa" && cd "$HOME/apps/exa"
@@ -284,7 +335,7 @@ install_exa_or_eza() {
   fi
 }
 
-# ====== 7) Shell aliases and defaults ======
+# ====== 8) Shell aliases and defaults ======
 configure_aliases() {
   say "Adding shell aliases to ~/.zshrc"
   touch "$HOME/.zshrc"
@@ -302,7 +353,7 @@ configure_aliases() {
   add_alias "alias vim='nvim'"
 }
 
-# ====== 8) LazyVim bootstrap ======
+# ====== 9) LazyVim bootstrap ======
 install_lazyvim() {
   say "Installing LazyVim starter"
 
