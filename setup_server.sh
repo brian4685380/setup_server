@@ -1,230 +1,313 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-# ====== helpers ======
+# =========================
+# Config
+# =========================
+ZSH_VERSION="5.9"
+NEOVIM_VERSION="0.11.4"
+ZOXIDE_VERSION="0.9.8"
+
+INSTALL_ZSH=0
+INSTALL_Z4H=0
+FORCE_LAZYVIM=0
+AUTO_HANDOFF=0
+
+# =========================
+# Helpers
+# =========================
 say() { printf "\n\033[1m==> %s\033[0m\n" "$*"; }
+warn() { printf "\n\033[33m[warn]\033[0m %s\n" "$*" >&2; }
+die() {
+  printf "\n\033[31m[error]\033[0m %s\n" "$*" >&2
+  exit 1
+}
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Ensure ~/bin exists and is first on PATH (for this run and future shells)
-mkdir -p "$HOME/bin"
-export PATH="$HOME/bin:$PATH"
-grep -q 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >>"$HOME/.bashrc"
-grep -q 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >>"$HOME/.zshrc"
+cleanup() {
+  [[ -n "${TMPDIR_BOOTSTRAP:-}" && -d "${TMPDIR_BOOTSTRAP:-}" ]] && rm -rf "$TMPDIR_BOOTSTRAP"
+}
+trap cleanup EXIT
+trap 'die "failed at line $LINENO"' ERR
 
-# ====== 1) (Optional) Install zsh from source into $HOME ======
-install_zsh() {
-  say "Installing zsh (from source) into \$HOME (optional)"
-  # Skip if a zsh is already present in PATH
-  if have zsh; then
-    say "zsh already available at $(command -v zsh). Skipping build."
-    return 0
-  fi
-
-  # Need wget/curl, tar, make, a compiler toolchain; we assume they exist
-  cd "$HOME"
-  rm -rf zsh-src zsh.tar zsh.tar.xz || true
-  if have wget; then
-    wget -O zsh.tar.xz "https://sourceforge.net/projects/zsh/files/latest/download"
+download() {
+  local url="$1"
+  local out="$2"
+  if have curl; then
+    curl -fL --retry 3 --retry-delay 1 -o "$out" "$url"
+  elif have wget; then
+    wget -O "$out" "$url"
   else
-    curl -L -o zsh.tar.xz "https://sourceforge.net/projects/zsh/files/latest/download"
-  fi
-  mkdir -p zsh-src
-  unxz zsh.tar.xz
-  tar -xvf zsh.tar -C zsh-src --strip-components 1
-  cd zsh-src
-  ./configure --prefix="$HOME"
-  make -j"$(getconf _NPROCESSORS_ONLN || echo 1)"
-  make install
-  cd "$HOME"
-  rm -rf zsh-src zsh.tar || true
-
-  # bash → zsh handoff (use the freshly built one if available)
-  if ! grep -q 'exec .*zsh -l' "$HOME/.bashrc" 2>/dev/null; then
-    cat >>"$HOME/.bashrc" <<'BRC'
-# auto-switch to zsh for interactive shells
-if [ -t 1 ]; then
-  if [ -x "$HOME/bin/zsh" ]; then
-    exec "$HOME/bin/zsh" -l
-  elif command -v zsh >/dev/null 2>&1; then
-    exec zsh -l
-  fi
-fi
-BRC
+    die "Neither curl nor wget is available"
   fi
 }
 
-# ====== 2) Install zsh4humans (v5) ======
+ensure_dir() {
+  mkdir -p "$1"
+}
+
+ensure_line() {
+  local line="$1"
+  local file="$2"
+  touch "$file"
+  grep -qxF "$line" "$file" || echo "$line" >>"$file"
+}
+
+detect_arch() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+  x86_64 | amd64) echo "x86_64" ;;
+  aarch64 | arm64) echo "arm64" ;;
+  *)
+    die "Unsupported architecture: $arch"
+    ;;
+  esac
+}
+
+ensure_base_layout() {
+  ensure_dir "$HOME/bin"
+  ensure_dir "$HOME/apps"
+  ensure_dir "$HOME/.config/shell"
+
+  export PATH="$HOME/bin:$PATH"
+
+  ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc"
+  ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc"
+
+  # Keep custom shell config in one managed file
+  local zrc="$HOME/.config/shell/bootstrap.zsh"
+  touch "$zrc"
+
+  if ! grep -q 'source "$HOME/.config/shell/bootstrap.zsh"' "$HOME/.zshrc" 2>/dev/null; then
+    cat >>"$HOME/.zshrc" <<'EOF'
+
+# User-managed bootstrap
+[[ -f "$HOME/.config/shell/bootstrap.zsh" ]] && source "$HOME/.config/shell/bootstrap.zsh"
+EOF
+  fi
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --install-zsh) INSTALL_ZSH=1 ;;
+    --install-z4h) INSTALL_Z4H=1 ;;
+    --force-lazyvim) FORCE_LAZYVIM=1 ;;
+    --auto-handoff) AUTO_HANDOFF=1 ;;
+    -h | --help)
+      cat <<EOF
+Usage: $0 [options]
+
+Options:
+  --install-zsh      Build/install zsh into \$HOME
+  --install-z4h      Run zsh4humans installer (interactive; best run last)
+  --force-lazyvim    Replace existing ~/.config/nvim
+  --auto-handoff     Add bash -> zsh auto-exec block to ~/.bashrc
+EOF
+      exit 0
+      ;;
+    *)
+      die "Unknown option: $1"
+      ;;
+    esac
+    shift
+  done
+}
+
+install_zsh() {
+  [[ "$INSTALL_ZSH" -eq 1 ]] || return 0
+
+  if have zsh; then
+    say "zsh already exists at $(command -v zsh); skipping build"
+    return 0
+  fi
+
+  say "Installing zsh $ZSH_VERSION into \$HOME"
+
+  TMPDIR_BOOTSTRAP="$(mktemp -d)"
+  local tarball="$TMPDIR_BOOTSTRAP/zsh.tar.xz"
+
+  download "https://www.zsh.org/pub/zsh-${ZSH_VERSION}.tar.xz" "$tarball"
+
+  tar -xf "$tarball" -C "$TMPDIR_BOOTSTRAP"
+  cd "$TMPDIR_BOOTSTRAP/zsh-$ZSH_VERSION"
+
+  ./configure --prefix="$HOME"
+  make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+  make install
+
+  say "zsh installed at $HOME/bin/zsh"
+}
+
+configure_auto_handoff() {
+  [[ "$AUTO_HANDOFF" -eq 1 ]] || return 0
+
+  say "Configuring optional bash -> zsh handoff"
+  if ! grep -q 'BEGIN bootstrap-zsh-handoff' "$HOME/.bashrc" 2>/dev/null; then
+    cat >>"$HOME/.bashrc" <<'EOF'
+
+# BEGIN bootstrap-zsh-handoff
+if [[ $- == *i* ]]; then
+  if [[ -x "$HOME/bin/zsh" ]]; then
+    exec "$HOME/bin/zsh" -l
+  elif command -v zsh >/dev/null 2>&1; then
+    exec "$(command -v zsh)" -l
+  fi
+fi
+# END bootstrap-zsh-handoff
+EOF
+  fi
+}
+
 install_z4h() {
-  say "Installing zsh4humans v5"
-  # Run installer via curl or wget
+  [[ "$INSTALL_Z4H" -eq 1 ]] || return 0
+
+  say "Installing zsh4humans"
+  warn "zsh4humans is interactive and may rewrite ~/.zshrc."
+  warn "It is intentionally run near the end of the script."
+
+  have zsh || die "zsh is required before installing zsh4humans"
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    die "zsh4humans installer needs an interactive terminal"
+  fi
+
   if have curl; then
     sh -c "$(curl -fsSL https://raw.githubusercontent.com/romkatv/zsh4humans/v5/install)"
   else
     sh -c "$(wget -O- https://raw.githubusercontent.com/romkatv/zsh4humans/v5/install)"
   fi
-  # Ensure PATH and zoxide init lines exist (added later too)
-  grep -q 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >>"$HOME/.zshrc"
 }
 
-# ====== 3) Powerlevel10k config ======
-install_p10k() {
-  say "Configuring Powerlevel10k"
-  # Only copy if source exists in CWD
-  if [ -f "$HOME/.p10k.zsh" ]; then
-    say "~/.p10k.zsh already present. Skipping copy."
-  elif [ -f "./.p10k.zsh" ]; then
-    cp "./.p10k.zsh" "$HOME/.p10k.zsh"
-  else
-    say "No .p10k.zsh found in current directory; skipping."
-  fi
-
-  # Make sure zshrc loads it (z4h usually handles this, but ensure)
-  if ! grep -q '\.p10k\.zsh' "$HOME/.zshrc" 2>/dev/null; then
-    cat >>"$HOME/.zshrc" <<'ZRC'
-# Load Powerlevel10k config if present
-[[ -f "$HOME/.p10k.zsh" ]] && source "$HOME/.p10k.zsh"
-ZRC
-  fi
-}
-
-# ====== 4) Install Neovim to ~/apps and symlink to ~/bin ======
 install_neovim() {
-  say "Installing Neovim v0.11.4 (linux64)"
-  mkdir -p "$HOME/apps" && cd "$HOME/apps"
-  local NVPKG="nvim-linux64.tar.gz"
-  rm -f "$NVPKG"
-  if have curl; then
-    curl -fL -o "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz"
-  else
-    wget -O "$NVPKG" "https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz"
-  fi
-  rm -rf "$HOME/apps/nvim-linux64"
-  tar xzf "$NVPKG"
-  ln -sf "$HOME/apps/nvim-linux-x86_64/bin/nvim" "$HOME/bin/nvim"
+  say "Installing Neovim $NEOVIM_VERSION"
+
+  local arch nvim_pkg nvim_url extract_dir
+  arch="$(detect_arch)"
+
+  case "$arch" in
+  x86_64)
+    nvim_pkg="nvim-linux-x86_64.tar.gz"
+    extract_dir="nvim-linux-x86_64"
+    ;;
+  arm64)
+    nvim_pkg="nvim-linux-arm64.tar.gz"
+    extract_dir="nvim-linux-arm64"
+    ;;
+  esac
+
+  local dst="$HOME/apps/$nvim_pkg"
+  download "https://github.com/neovim/neovim/releases/download/v${NEOVIM_VERSION}/${nvim_pkg}" "$dst"
+
+  rm -rf "$HOME/apps/$extract_dir"
+  tar -xzf "$dst" -C "$HOME/apps"
+
+  [[ -x "$HOME/apps/$extract_dir/bin/nvim" ]] || die "nvim binary not found after extraction"
+  ln -sf "$HOME/apps/$extract_dir/bin/nvim" "$HOME/bin/nvim"
 }
 
-# ====== 5) Install zoxide (musl static) ======
 install_zoxide() {
-  say "Installing zoxide v0.9.8 (musl)"
-  mkdir -p "$HOME/apps/zoxide" && cd "$HOME/apps/zoxide"
-  local ZO="zoxide-0.9.8-x86_64-unknown-linux-musl.tar.gz"
-  rm -f "$ZO"
-  if have curl; then
-    curl -fL -o "$ZO" "https://github.com/ajeetdsouza/zoxide/releases/download/v0.9.8/${ZO}"
-  else
-    wget -O "$ZO" "https://github.com/ajeetdsouza/zoxide/releases/download/v0.9.8/${ZO}"
-  fi
-  rm -rf "$HOME/apps/zoxide/zoxide-0.9.8-x86_64-unknown-linux-musl" || true
-  tar -xzf "$ZO"
-  # Some tarballs nest the binary; locate it robustly
-  local ZOX
-  ZOX="$(find "$PWD" -maxdepth 2 -type f -name zoxide | head -n1 || true)"
-  if [ -n "${ZOX:-}" ]; then
-    install -m 0755 "$ZOX" "$HOME/bin/zoxide"
-  else
-    say "zoxide binary not found after extraction"
-    exit 1
-  fi
-  # Shell init
-  if ! grep -q 'zoxide init zsh' "$HOME/.zshrc" 2>/dev/null; then
-    echo 'eval "$(zoxide init zsh)"' >>"$HOME/.zshrc"
-  fi
+  say "Installing zoxide $ZOXIDE_VERSION"
+
+  local arch zoxide_pkg
+  arch="$(detect_arch)"
+  case "$arch" in
+  x86_64) zoxide_pkg="zoxide-${ZOXIDE_VERSION}-x86_64-unknown-linux-musl.tar.gz" ;;
+  arm64) zoxide_pkg="zoxide-${ZOXIDE_VERSION}-aarch64-unknown-linux-musl.tar.gz" ;;
+  esac
+
+  ensure_dir "$HOME/apps/zoxide"
+  local dst="$HOME/apps/zoxide/$zoxide_pkg"
+  download "https://github.com/ajeetdsouza/zoxide/releases/download/v${ZOXIDE_VERSION}/${zoxide_pkg}" "$dst"
+
+  rm -rf "$HOME/apps/zoxide/extract"
+  mkdir -p "$HOME/apps/zoxide/extract"
+  tar -xzf "$dst" -C "$HOME/apps/zoxide/extract"
+
+  local zox
+  zox="$(find "$HOME/apps/zoxide/extract" -type f -name zoxide | head -n1 || true)"
+  [[ -n "$zox" ]] || die "zoxide binary not found after extraction"
+
+  install -m 0755 "$zox" "$HOME/bin/zoxide"
+
+  local zrc="$HOME/.config/shell/bootstrap.zsh"
+  ensure_line 'eval "$(zoxide init zsh)"' "$zrc"
 }
 
-# ====== 6) Install exa (deprecated) with graceful fallback to eza ======
-install_exa_or_eza() {
-  say "Installing exa v0.10.1 (or eza fallback)"
-  mkdir -p "$HOME/apps/exa" && cd "$HOME/apps/exa"
-  local EXAZIP="exa-linux-x86_64-v0.10.1.zip"
-  local EXAURL="https://github.com/ogham/exa/releases/download/v0.10.1/${EXAZIP}"
-  local got_exa=0
-  rm -f "$EXAZIP"
-  if have curl; then
-    curl -fL -o "$EXAZIP" "$EXAURL" || true
-  else
-    wget -O "$EXAZIP" "$EXAURL" || true
-  fi
+install_eza() {
+  say "Installing eza"
+  local arch eza_pkg tmpfile
+  arch="$(detect_arch)"
 
-  if [ -f "$EXAZIP" ]; then
-    rm -rf "$HOME/apps/exa/exa" "$HOME/apps/exa/bin" || true
-    unzip -o "$EXAZIP"
-    # Older zips contain bin/exa; newer might have just "exa"
-    if [ -f "$HOME/apps/exa/bin/exa" ]; then
-      ln -sf "$HOME/apps/exa/bin/exa" "$HOME/bin/exa"
-      got_exa=1
-    elif [ -f "$HOME/apps/exa/exa" ]; then
-      ln -sf "$HOME/apps/exa/exa" "$HOME/bin/exa"
-      got_exa=1
-    fi
-  fi
+  case "$arch" in
+  x86_64) eza_pkg="eza_x86_64-unknown-linux-gnu.tar.gz" ;;
+  arm64) eza_pkg="eza_aarch64-unknown-linux-gnu.tar.gz" ;;
+  esac
 
-  if [ "$got_exa" -eq 0 ]; then
-    say "exa download failed or structure changed; falling back to eza"
-    mkdir -p "$HOME/apps/eza" && cd "$HOME/apps/eza"
-    local EZAURL
-    # Try a common static build; adjust if needed per distro/arch
-    if have curl; then
-      EZAURL="https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz"
-      curl -fL -o eza.tar.gz "$EZAURL" || true
-    else
-      EZAURL="https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz"
-      wget -O eza.tar.gz "$EZAURL" || true
-    fi
-    if [ -f eza.tar.gz ]; then
-      tar -xzf eza.tar.gz
-      local EZABIN
-      EZABIN="$(find "$PWD" -maxdepth 2 -type f -name eza | head -n1 || true)"
-      if [ -n "${EZABIN:-}" ]; then
-        ln -sf "$EZABIN" "$HOME/bin/exa" # still map to exa name for your aliases
-      else
-        say "eza binary not found; skipping."
-      fi
-    fi
-  fi
+  ensure_dir "$HOME/apps/eza"
+  tmpfile="$HOME/apps/eza/$eza_pkg"
+  download "https://github.com/eza-community/eza/releases/latest/download/${eza_pkg}" "$tmpfile"
+
+  rm -rf "$HOME/apps/eza/extract"
+  mkdir -p "$HOME/apps/eza/extract"
+  tar -xzf "$tmpfile" -C "$HOME/apps/eza/extract"
+
+  local ezabin
+  ezabin="$(find "$HOME/apps/eza/extract" -type f -name eza | head -n1 || true)"
+  [[ -n "$ezabin" ]] || die "eza binary not found after extraction"
+
+  ln -sf "$ezabin" "$HOME/bin/eza"
 }
 
-# ====== 7) Shell aliases and defaults ======
-configure_aliases() {
-  say "Adding shell aliases to ~/.zshrc"
-  touch "$HOME/.zshrc"
-  add_alias() {
-    local line="$1"
-    grep -qxF "$line" "$HOME/.zshrc" 2>/dev/null || echo "$line" >>"$HOME/.zshrc"
-  }
-  add_alias "alias gs='git status'"
-  add_alias "alias ga='git add'"
-  add_alias "alias gc='git commit'"
-  add_alias "alias ls='exa -al --icons'"
-  add_alias "alias ll='exa -l --icons'"
-  add_alias "alias vim='nvim'"
+configure_shell() {
+  say "Writing shell config"
+
+  local zrc="$HOME/.config/shell/bootstrap.zsh"
+  touch "$zrc"
+
+  ensure_line "alias gs='git status'" "$zrc"
+  ensure_line "alias ga='git add'" "$zrc"
+  ensure_line "alias gc='git commit'" "$zrc"
+  ensure_line "alias ls='eza -al --icons=auto'" "$zrc"
+  ensure_line "alias ll='eza -l --icons=auto'" "$zrc"
+  ensure_line "alias vim='nvim'" "$zrc"
 }
 
-# ====== 8) LazyVim bootstrap ======
 install_lazyvim() {
   say "Installing LazyVim starter"
-  # Backup existing config if present
-  if [ -d "$HOME/.config/nvim" ]; then
-    mv "$HOME/.config/nvim" "$HOME/.config/nvim.bak.$(date +%s)" || true
+
+  if [[ -d "$HOME/.config/nvim" && "$FORCE_LAZYVIM" -ne 1 ]]; then
+    warn "~/.config/nvim already exists; skipping LazyVim install"
+    warn "Use --force-lazyvim if you want to replace it"
+    return 0
   fi
+
+  if [[ -d "$HOME/.config/nvim" && "$FORCE_LAZYVIM" -eq 1 ]]; then
+    mv "$HOME/.config/nvim" "$HOME/.config/nvim.bak.$(date +%s)"
+  fi
+
   git clone https://github.com/LazyVim/starter "$HOME/.config/nvim"
   rm -rf "$HOME/.config/nvim/.git"
-  # Add Monokai Pro plugin file if provided next to script
-  if [ -f "./monokai-pro.lua" ]; then
-    mkdir -p "$HOME/.config/nvim/lua/plugins"
-    cp "./monokai-pro.lua" "$HOME/.config/nvim/lua/plugins/monokai-pro.lua"
-  fi
 }
 
 main() {
+  parse_args "$@"
+  ensure_base_layout
   install_zsh
-  install_z4h
-  install_p10k
   install_neovim
   install_zoxide
-  install_exa_or_eza
-  configure_aliases
+  install_eza
+  configure_shell
   install_lazyvim
-  say "All done! Start a new shell or run: exec zsh -l"
+  configure_auto_handoff
+  install_z4h
+
+  say "Done."
+  echo
+  echo "Next steps:"
+  echo "  1. Start a new shell"
+  echo "  2. Or run: exec zsh -l"
 }
 
 main "$@"
