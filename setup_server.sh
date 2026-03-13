@@ -291,6 +291,39 @@ install_lazyvim() {
   rm -rf "$HOME/.config/nvim/.git"
 }
 
+install_p10k_config() {
+  say "Configuring Powerlevel10k"
+
+  local zrc="$HOME/.config/shell/bootstrap.zsh"
+
+  # Copy user-provided config if available
+  if [[ -f "$HOME/.p10k.zsh" ]]; then
+    say "~/.p10k.zsh already exists; keeping it"
+  elif [[ -f "./.p10k.zsh" ]]; then
+    cp "./.p10k.zsh" "$HOME/.p10k.zsh"
+    say "Copied ./.p10k.zsh -> ~/.p10k.zsh"
+  else
+    warn "No .p10k.zsh found in current directory; skipping copy"
+  fi
+
+  # Ensure shell bootstrap loads it
+  ensure_line '[[ -f "$HOME/.p10k.zsh" ]] && source "$HOME/.p10k.zsh"' "$zrc"
+}
+
+install_monokai_pro_plugin() {
+  say "Installing Monokai Pro plugin override"
+
+  local plugin_dir="$HOME/.config/nvim/lua/plugins"
+  ensure_dir "$plugin_dir"
+
+  if [[ -f "./monokai-pro.lua" ]]; then
+    cp "./monokai-pro.lua" "$plugin_dir/monokai-pro.lua"
+    say "Copied ./monokai-pro.lua -> $plugin_dir/monokai-pro.lua"
+  else
+    warn "No monokai-pro.lua found in current directory; skipping"
+  fi
+}
+
 main() {
   parse_args "$@"
   ensure_base_layout
