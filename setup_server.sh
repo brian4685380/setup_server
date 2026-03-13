@@ -13,6 +13,8 @@ INSTALL_Z4H=0
 FORCE_LAZYVIM=0
 AUTO_HANDOFF=0
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 # =========================
 # Helpers
 # =========================
@@ -24,6 +26,7 @@ die() {
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+TMPDIR_BOOTSTRAP=""
 cleanup() {
   [[ -n "${TMPDIR_BOOTSTRAP:-}" && -d "${TMPDIR_BOOTSTRAP:-}" ]] && rm -rf "$TMPDIR_BOOTSTRAP"
 }
@@ -65,29 +68,6 @@ detect_arch() {
   esac
 }
 
-ensure_base_layout() {
-  ensure_dir "$HOME/bin"
-  ensure_dir "$HOME/apps"
-  ensure_dir "$HOME/.config/shell"
-
-  export PATH="$HOME/bin:$PATH"
-
-  ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc"
-  ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc"
-
-  # Keep custom shell config in one managed file
-  local zrc="$HOME/.config/shell/bootstrap.zsh"
-  touch "$zrc"
-
-  if ! grep -q 'source "$HOME/.config/shell/bootstrap.zsh"' "$HOME/.zshrc" 2>/dev/null; then
-    cat >>"$HOME/.zshrc" <<'EOF'
-
-# User-managed bootstrap
-[[ -f "$HOME/.config/shell/bootstrap.zsh" ]] && source "$HOME/.config/shell/bootstrap.zsh"
-EOF
-  fi
-}
-
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -96,14 +76,15 @@ parse_args() {
     --force-lazyvim) FORCE_LAZYVIM=1 ;;
     --auto-handoff) AUTO_HANDOFF=1 ;;
     -h | --help)
-      cat <<EOF
-Usage: $0 [options]
+      cat <<'EOF'
+Usage: ./bootstrap.sh [options]
 
 Options:
-  --install-zsh      Build/install zsh into \$HOME
-  --install-z4h      Run zsh4humans installer (interactive; best run last)
+  --install-zsh      Build/install zsh into $HOME
+  --install-z4h      Run zsh4humans installer (interactive; runs last)
   --force-lazyvim    Replace existing ~/.config/nvim
   --auto-handoff     Add bash -> zsh auto-exec block to ~/.bashrc
+  -h, --help         Show this help
 EOF
       exit 0
       ;;
@@ -115,6 +96,37 @@ EOF
   done
 }
 
+# =========================
+# Base layout / shell files
+# =========================
+ensure_base_layout() {
+  say "Preparing base layout"
+
+  ensure_dir "$HOME/bin"
+  ensure_dir "$HOME/apps"
+  ensure_dir "$HOME/.config"
+  ensure_dir "$HOME/.config/shell"
+
+  export PATH="$HOME/bin:$PATH"
+
+  ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc"
+  ensure_line 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc"
+
+  local zrc="$HOME/.config/shell/bootstrap.zsh"
+  touch "$zrc"
+
+  if ! grep -qF 'source "$HOME/.config/shell/bootstrap.zsh"' "$HOME/.zshrc" 2>/dev/null; then
+    cat >>"$HOME/.zshrc" <<'EOF'
+
+# User-managed bootstrap
+[[ -f "$HOME/.config/shell/bootstrap.zsh" ]] && source "$HOME/.config/shell/bootstrap.zsh"
+EOF
+  fi
+}
+
+# =========================
+# Optional zsh build
+# =========================
 install_zsh() {
   [[ "$INSTALL_ZSH" -eq 1 ]] || return 0
 
@@ -144,6 +156,7 @@ configure_auto_handoff() {
   [[ "$AUTO_HANDOFF" -eq 1 ]] || return 0
 
   say "Configuring optional bash -> zsh handoff"
+
   if ! grep -q 'BEGIN bootstrap-zsh-handoff' "$HOME/.bashrc" 2>/dev/null; then
     cat >>"$HOME/.bashrc" <<'EOF'
 
@@ -160,14 +173,17 @@ EOF
   fi
 }
 
+# =========================
+# zsh4humans (optional)
+# =========================
 install_z4h() {
   [[ "$INSTALL_Z4H" -eq 1 ]] || return 0
 
   say "Installing zsh4humans"
-  warn "zsh4humans is interactive and may rewrite ~/.zshrc."
-  warn "It is intentionally run near the end of the script."
+  warn "zsh4humans is interactive and may rewrite ~/.zshrc"
+  warn "It is intentionally run at the end"
 
-  have zsh || die "zsh is required before installing zsh4humans"
+  have zsh || [[ -x "$HOME/bin/zsh" ]] || die "zsh is required before installing zsh4humans"
 
   if [[ ! -t 0 || ! -t 1 ]]; then
     die "zsh4humans installer needs an interactive terminal"
@@ -180,10 +196,33 @@ install_z4h() {
   fi
 }
 
+# =========================
+# Powerlevel10k config
+# =========================
+install_p10k_config() {
+  say "Configuring Powerlevel10k"
+
+  local zrc="$HOME/.config/shell/bootstrap.zsh"
+
+  if [[ -f "$HOME/.p10k.zsh" ]]; then
+    say "~/.p10k.zsh already exists; keeping it"
+  elif [[ -f "$SCRIPT_DIR/.p10k.zsh" ]]; then
+    cp "$SCRIPT_DIR/.p10k.zsh" "$HOME/.p10k.zsh"
+    say "Copied $SCRIPT_DIR/.p10k.zsh -> ~/.p10k.zsh"
+  else
+    warn "No .p10k.zsh found next to the script; skipping copy"
+  fi
+
+  ensure_line '[[ -f "$HOME/.p10k.zsh" ]] && source "$HOME/.p10k.zsh"' "$zrc"
+}
+
+# =========================
+# Neovim
+# =========================
 install_neovim() {
   say "Installing Neovim $NEOVIM_VERSION"
 
-  local arch nvim_pkg nvim_url extract_dir
+  local arch nvim_pkg extract_dir
   arch="$(detect_arch)"
 
   case "$arch" in
@@ -207,6 +246,9 @@ install_neovim() {
   ln -sf "$HOME/apps/$extract_dir/bin/nvim" "$HOME/bin/nvim"
 }
 
+# =========================
+# zoxide
+# =========================
 install_zoxide() {
   say "Installing zoxide $ZOXIDE_VERSION"
 
@@ -235,9 +277,13 @@ install_zoxide() {
   ensure_line 'eval "$(zoxide init zsh)"' "$zrc"
 }
 
+# =========================
+# eza
+# =========================
 install_eza() {
   say "Installing eza"
-  local arch eza_pkg tmpfile
+
+  local arch eza_pkg
   arch="$(detect_arch)"
 
   case "$arch" in
@@ -246,7 +292,7 @@ install_eza() {
   esac
 
   ensure_dir "$HOME/apps/eza"
-  tmpfile="$HOME/apps/eza/$eza_pkg"
+  local tmpfile="$HOME/apps/eza/$eza_pkg"
   download "https://github.com/eza-community/eza/releases/latest/download/${eza_pkg}" "$tmpfile"
 
   rm -rf "$HOME/apps/eza/extract"
@@ -260,6 +306,9 @@ install_eza() {
   ln -sf "$ezabin" "$HOME/bin/eza"
 }
 
+# =========================
+# Shell aliases / defaults
+# =========================
 configure_shell() {
   say "Writing shell config"
 
@@ -274,8 +323,13 @@ configure_shell() {
   ensure_line "alias vim='nvim'" "$zrc"
 }
 
+# =========================
+# LazyVim
+# =========================
 install_lazyvim() {
   say "Installing LazyVim starter"
+
+  ensure_dir "$HOME/.config"
 
   if [[ -d "$HOME/.config/nvim" && "$FORCE_LAZYVIM" -ne 1 ]]; then
     warn "~/.config/nvim already exists; skipping LazyVim install"
@@ -291,36 +345,20 @@ install_lazyvim() {
   rm -rf "$HOME/.config/nvim/.git"
 }
 
-install_p10k_config() {
-  say "Configuring Powerlevel10k"
-
-  local zrc="$HOME/.config/shell/bootstrap.zsh"
-
-  # Copy user-provided config if available
-  if [[ -f "$HOME/.p10k.zsh" ]]; then
-    say "~/.p10k.zsh already exists; keeping it"
-  elif [[ -f "./.p10k.zsh" ]]; then
-    cp "./.p10k.zsh" "$HOME/.p10k.zsh"
-    say "Copied ./.p10k.zsh -> ~/.p10k.zsh"
-  else
-    warn "No .p10k.zsh found in current directory; skipping copy"
-  fi
-
-  # Ensure shell bootstrap loads it
-  ensure_line '[[ -f "$HOME/.p10k.zsh" ]] && source "$HOME/.p10k.zsh"' "$zrc"
-}
-
+# =========================
+# Monokai Pro plugin file
+# =========================
 install_monokai_pro_plugin() {
   say "Installing Monokai Pro plugin override"
 
   local plugin_dir="$HOME/.config/nvim/lua/plugins"
   ensure_dir "$plugin_dir"
 
-  if [[ -f "./monokai-pro.lua" ]]; then
-    cp "./monokai-pro.lua" "$plugin_dir/monokai-pro.lua"
-    say "Copied ./monokai-pro.lua -> $plugin_dir/monokai-pro.lua"
+  if [[ -f "$SCRIPT_DIR/monokai-pro.lua" ]]; then
+    cp "$SCRIPT_DIR/monokai-pro.lua" "$plugin_dir/monokai-pro.lua"
+    say "Copied $SCRIPT_DIR/monokai-pro.lua -> $plugin_dir/monokai-pro.lua"
   else
-    warn "No monokai-pro.lua found in current directory; skipping"
+    warn "No monokai-pro.lua found next to the script; skipping"
   fi
 }
 
@@ -332,15 +370,20 @@ main() {
   install_zoxide
   install_eza
   configure_shell
+  install_p10k_config
   install_lazyvim
+  install_monokai_pro_plugin
   configure_auto_handoff
   install_z4h
 
   say "Done."
   echo
   echo "Next steps:"
-  echo "  1. Start a new shell"
-  echo "  2. Or run: exec zsh -l"
+  echo "  1. Make sure these files exist next to the script if you want them copied:"
+  echo "     - .p10k.zsh"
+  echo "     - monokai-pro.lua"
+  echo "  2. Start a new shell"
+  echo "  3. Or run: exec zsh -l"
 }
 
 main "$@"
